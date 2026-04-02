@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="https://lucide.dev/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title></title>
     <script>
       (function () {
@@ -20,6 +20,7 @@
               canvas.height = size;
               var ctx = canvas.getContext('2d');
               if (!ctx) return;
+
               ctx.beginPath();
               ctx.moveTo(radius, 0);
               ctx.lineTo(size - radius, 0);
@@ -33,34 +34,42 @@
               ctx.closePath();
               ctx.clip();
               ctx.drawImage(img, 0, 0, size, size);
+
               var favicon = document.querySelector('link[rel="icon"]');
-              if (favicon) favicon.href = canvas.toDataURL('image/png');
+              if (favicon) {
+                favicon.href = canvas.toDataURL('image/png');
+              }
             } catch (e) {}
           };
           img.onerror = function () {
             var favicon = document.querySelector('link[rel="icon"]');
-            if (favicon) favicon.href = source;
+            if (favicon) {
+              favicon.href = source;
+            }
           };
           img.src = source;
         }
 
         try {
-          var saved = localStorage.getItem('cloudnav_data_cache');
-          var settings = null;
-          if (saved) {
-            var parsed = JSON.parse(saved);
-            settings = parsed && parsed.settings ? parsed.settings : null;
-          }
+          const saved = localStorage.getItem('cloudnav_site_settings');
+          let settings = saved ? JSON.parse(saved) : null;
+
           if (!settings) {
-            var req = new XMLHttpRequest();
+            const req = new XMLHttpRequest();
             req.open('GET', '/api/storage?getConfig=website', false);
             req.send(null);
             if (req.status >= 200 && req.status < 300 && req.responseText) {
               settings = JSON.parse(req.responseText);
+              localStorage.setItem('cloudnav_site_settings', JSON.stringify(settings));
             }
           }
-          if (settings && settings.title) document.title = settings.title;
-          if (settings && settings.favicon) applyRoundedFavicon(settings.favicon);
+
+          if (settings && settings.title) {
+            document.title = settings.title;
+          }
+          if (settings && settings.favicon) {
+            applyRoundedFavicon(settings.favicon);
+          }
         } catch (e) {}
       })();
     </script>
@@ -107,8 +116,7 @@
     "react": "https://aistudiocdn.com/react@^19.2.0",
     "uuid": "https://aistudiocdn.com/uuid@^13.0.0",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
-    "buffer": "https://aistudiocdn.com/buffer@^6.0.3",
-    "jszip": "https://aistudiocdn.com/jszip@^3.10.1"
+    "buffer": "https://aistudiocdn.com/buffer@^6.0.3"
   }
 }
 </script>

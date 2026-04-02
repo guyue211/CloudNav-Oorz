@@ -1,6 +1,5 @@
-
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, Save, Bot, Key, Globe, Sparkles, PauseCircle, Wrench, Box, Copy, Check, List, GripVertical, Filter, LayoutTemplate, RefreshCw, Info, Download, Sidebar, Keyboard, MousePointerClick, AlertTriangle, Package, Zap, Menu, Upload } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Save, Bot, Key, Globe, Sparkles, PauseCircle, Wrench, Box, Copy, Check, LayoutTemplate, RefreshCw, Info, Download, Sidebar, Keyboard, MousePointerClick, AlertTriangle, Package, Zap, Menu, Upload } from 'lucide-react';
 import { AIConfig, LinkItem, Category, SiteSettings } from '../types';
 import { generateLinkDescription } from '../services/geminiService';
 import JSZip from 'jszip';
@@ -14,19 +13,26 @@ interface SettingsModalProps {
   links: LinkItem[];
   categories: Category[];
   onUpdateLinks: (links: LinkItem[]) => void;
+  authToken: string | null;
 }
 
-// 辅助函数：生成随机 HSL 颜色
 const getRandomColor = () => {
     const h = Math.floor(Math.random() * 360);
-    const s = 70 + Math.random() * 20; // 70-90% saturation
-    const l = 45 + Math.random() * 15; // 45-60% lightness
+    const s = 70 + Math.random() * 20;
+    const l = 45 + Math.random() * 15;
     return `hsl(${h}, ${s}%, ${l}%)`;
 };
 
-// 辅助函数：生成 SVG Data URI 图标 (支持自定义颜色)
 const generateSvgIcon = (text: string, color1: string, color2: string) => {
-    const char = (text && text.length > 0 ? text.charAt(0) : 'C').toUpperCase();
+    let char = '';
+    if (text && text.length > 0) {
+        char = text.charAt(0);
+        if (/^[a-zA-Z]$/.test(char)) {
+            char = '云';
+        }
+    } else {
+        char = '云';
+    }
     
     const gradientId = 'g_' + Math.random().toString(36).substr(2, 9);
 
@@ -52,16 +58,18 @@ const generateSvgIcon = (text: string, color1: string, color2: string) => {
 };
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ 
-    isOpen, onClose, config, siteSettings, onSave, links, categories, onUpdateLinks 
+    isOpen, onClose, config, siteSettings, onSave, links, categories, onUpdateLinks, authToken 
 }) => {
-  const [activeTab, setActiveTab] = useState<'site' | 'ai' | 'tools' | 'links'>('site');
+  const [activeTab, setActiveTab] = useState<'site' | 'ai' | 'tools'>('site');
   const [localConfig, setLocalConfig] = useState<AIConfig>(config);
   
   const [localSiteSettings, setLocalSiteSettings] = useState<SiteSettings>(() => ({
       title: siteSettings?.title || 'CloudNav - 我的导航',
       navTitle: siteSettings?.navTitle || 'CloudNav',
       favicon: siteSettings?.favicon || '',
-      cardStyle: siteSettings?.cardStyle || 'detailed'
+      cardStyle: siteSettings?.cardStyle || 'detailed',
+      requirePasswordOnVisit: siteSettings?.requirePasswordOnVisit ?? false,
+      passwordExpiryDays: siteSettings?.passwordExpiryDays ?? 7
   }));
   
   const [generatedIcons, setGeneratedIcons] = useState<string[]>([]);
@@ -70,22 +78,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const shouldStopRef = useRef(false);
 
-  // Tools State
   const [password, setPassword] = useState('');
   const [domain, setDomain] = useState('');
   const [browserType, setBrowserType] = useState<'chrome' | 'firefox'>('chrome');
   const [isZipping, setIsZipping] = useState(false);
   const faviconUploadRef = useRef<HTMLInputElement>(null);
   
-  // Link Management State
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [filterCategory, setFilterCategory] = useState<string>('all');
-  
-  const availableCategories = useMemo(() => {
-      const catIds = Array.from(new Set(links.map(l => l.categoryId)));
-      return catIds;
-  }, [links]);
-
   const [copiedStates, setCopiedStates] = useState<{[key: string]: boolean}>({});
 
   const updateGeneratedIcons = (text: string) => {
@@ -106,7 +104,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           title: siteSettings?.title || 'CloudNav - 我的导航',
           navTitle: siteSettings?.navTitle || 'CloudNav',
           favicon: siteSettings?.favicon || '',
-          cardStyle: siteSettings?.cardStyle || 'detailed'
+          cardStyle: siteSettings?.cardStyle || 'detailed',
+          requirePasswordOnVisit: siteSettings?.requirePasswordOnVisit ?? false,
+          passwordExpiryDays: siteSettings?.passwordExpiryDays ?? 7
       };
       setLocalSiteSettings(safeSettings);
       if (generatedIcons.length === 0) {
@@ -120,8 +120,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       setDomain(window.location.origin);
       const storedToken = localStorage.getItem('cloudnav_auth_token');
       if (storedToken) setPassword(storedToken);
-      setDraggedId(null);
-      setFilterCategory('all');
     }
   }, [isOpen, config, siteSettings]);
 
@@ -129,29 +127,40 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setLocalConfig(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleSiteChange = (key: keyof SiteSettings, value: string) => {
+  const handleSiteChange = async (key: keyof SiteSettings, value: any) => {
     setLocalSiteSettings(prev => {
         const next = { ...prev, [key]: value };
+        
+        // 如果是身份验证过期天数修改，立即保存到 KV 空间
+        if (key === 'passwordExpiryDays' && authToken) {
+            saveWebsiteConfigToKV(next);
+        }
+        
         return next;
     });
   };
 
-  const handleLocalFaviconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      if (!file.type.startsWith('image/')) {
-          alert('请上传图片文件');
-          e.target.value = '';
-          return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-          if (typeof reader.result === 'string') {
-              handleSiteChange('favicon', reader.result as any);
-          }
-      };
-      reader.readAsDataURL(file);
-      e.target.value = '';
+  // 保存网站配置到 KV 空间
+  const saveWebsiteConfigToKV = async (siteSettings: SiteSettings) => {
+    try {
+        const response = await fetch('/api/storage', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-auth-password': authToken || ''
+            },
+            body: JSON.stringify({
+                saveConfig: 'website',
+                config: siteSettings
+            })
+        });
+        
+        if (!response.ok) {
+            console.error('Failed to save website config to KV:', response.statusText);
+        }
+    } catch (error) {
+        console.error('Error saving website config to KV:', error);
+    }
   };
 
   const handleSave = () => {
@@ -204,6 +213,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       }, 2000);
   };
 
+  const handleLocalFaviconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      if (!file.type.startsWith('image/')) {
+          alert('请上传图片文件');
+          e.target.value = '';
+          return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+          if (typeof reader.result === 'string') {
+              handleSiteChange('favicon', reader.result);
+          }
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+  };
+
   const handleDownloadFile = (filename: string, content: string) => {
       const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -216,38 +245,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       URL.revokeObjectURL(url);
   };
 
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-      setDraggedId(id);
-      e.dataTransfer.effectAllowed = "move";
-  };
-
-  const handleDragOver = (e: React.DragEvent, targetId: string) => {
-      e.preventDefault(); 
-      if (!draggedId || draggedId === targetId) return;
-      
-      const newLinks = [...links];
-      const sourceIndex = newLinks.findIndex(l => l.id === draggedId);
-      const targetIndex = newLinks.findIndex(l => l.id === targetId);
-
-      if (sourceIndex === -1 || targetIndex === -1) return;
-
-      const [movedItem] = newLinks.splice(sourceIndex, 1);
-      newLinks.splice(targetIndex, 0, movedItem);
-      
-      onUpdateLinks(newLinks);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-      e.preventDefault();
-      setDraggedId(null);
-  };
-
-  const filteredLinks = useMemo(() => {
-      if (filterCategory === 'all') return links;
-      return links.filter(l => l.categoryId === filterCategory);
-  }, [links, filterCategory]);
-
-  // Extension Generators v7.6
   const getManifestJson = () => {
     const navName = localSiteSettings.navTitle || "CloudNav";
     const json: any = {
@@ -292,27 +289,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return JSON.stringify(json, null, 2);
   };
 
-  const extBackgroundJs = `// background.js - CloudNav Assistant v7.6
-// 内置配置
+  const extBackgroundJs = `// background.js - ${localSiteSettings.navTitle || 'CloudNav'} Assistant v7.6
 const CONFIG = {
   apiBase: "${domain}",
   password: "${password}",
   siteName: "${(localSiteSettings.navTitle || 'CloudNav').replace(/"/g, '\\"')}"
 };
 
-// 缓存数据
 let linkCache = [];
 let categoryCache = [];
 
-// --- 1. 初始化与缓存管理 ---
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
-  
-  // 初始化菜单
   refreshCache().then(buildMenus);
 });
 
-// 监听存储变化，实时更新缓存和菜单
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.cloudnav_data) {
         refreshCache().then(buildMenus);
@@ -328,7 +319,6 @@ async function refreshCache() {
     return;
 }
 
-// --- 2. 侧边栏交互 (左键 / 快捷键) ---
 const windowPorts = {};
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -365,19 +355,14 @@ chrome.action.onClicked.addListener(async (tab) => {
     }
 });
 
-// --- 3. 统一菜单逻辑 (核心功能) ---
-
-// 构建菜单结构
 function buildMenus() {
     chrome.contextMenus.removeAll(() => {
-        // 创建一个统一的根菜单，同时支持 "page" (网页右键), "link" (链接右键), "action" (图标右键)
         chrome.contextMenus.create({
             id: "cloudnav_root",
             title: \`⚡ 保存到 \${CONFIG.siteName}\`,
             contexts: ["page", "link", "action"]
         });
 
-        // 动态生成分类子菜单
         if (categoryCache.length > 0) {
             categoryCache.forEach(cat => {
                 chrome.contextMenus.create({
@@ -398,23 +383,16 @@ function buildMenus() {
     });
 }
 
-// 动态更新标题 (判重逻辑)
 function updateMenuTitle(url) {
     if (!url) return;
     const cleanUrl = url.replace(/\\/$/, '').toLowerCase();
-    
-    // 检查是否存在
     const exists = linkCache.some(l => l.url && l.url.replace(/\\/$/, '').toLowerCase() === cleanUrl);
-    
     const newTitle = exists ? \`⚠️ 已存在 - 保存到 \${CONFIG.siteName}\` : \`⚡ 保存到 \${CONFIG.siteName}\`;
-    
-    // 仅更新标题，不重绘整个菜单，性能更高
     chrome.contextMenus.update("cloudnav_root", { title: newTitle }, () => {
-        if (chrome.runtime.lastError) { /* ignore if menu not ready */ }
+        if (chrome.runtime.lastError) { }
     });
 }
 
-// 监听标签页变化，触发判重检查
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
    try {
        const tab = await chrome.tabs.get(activeInfo.tabId);
@@ -428,32 +406,17 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
    }
 });
 
-// --- 4. 菜单点击处理 ---
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    // 统一处理所有 "save_to_" 开头的点击事件
     if (String(info.menuItemId).startsWith("save_to_")) {
         const catId = String(info.menuItemId).replace("save_to_", "");
-        // 优先使用 linkUrl (如果是右键点击链接)，否则使用当前标签页的 url/title
-        // 注意：如果是点击图标右键 (Action context), info.linkUrl 也是 undefined，会自动回退到 tab.url
         const title = tab.title;
         const url = info.linkUrl || tab.url;
-        
-        // 简单判重 (仅用于通知提示，不阻止保存)
         const cleanUrl = url.replace(/\\/$/, '').toLowerCase();
         const exists = linkCache.some(l => l.url.replace(/\\/$/, '').toLowerCase() === cleanUrl);
-        
-        if (exists) {
-            // 如果已存在，再次保存通常意味着用户想更新或者不介意重复，
-            // 但为了防止误操作，这里可以简单弹个确认，或者直接保存。
-            // 由于 Context Menu 无法直接弹 confirm (除非注入脚本)，我们这里直接保存但提示已存在。
-            // 用户已经看到 "⚠️ 已存在" 的标题了，点击说明确实想存。
-        }
-
         saveLink(title, url, catId);
     }
 });
 
-// 通用保存逻辑
 async function saveLink(title, url, categoryId, icon = '') {
     if (!CONFIG.password) {
         notify('保存失败', '未配置密码，请先在侧边栏登录。');
@@ -485,10 +448,9 @@ async function saveLink(title, url, categoryId, icon = '') {
         if (res.ok) {
             notify('保存成功', \`已保存到 \${CONFIG.siteName}\`);
             chrome.runtime.sendMessage({ type: 'refresh' }).catch(() => {});
-            // 乐观更新缓存
             const newLink = { id: Date.now().toString(), title, url, categoryId, icon };
             linkCache.unshift(newLink);
-            updateMenuTitle(url); // 立即更新右键菜单状态
+            updateMenuTitle(url);
         } else {
             notify('保存失败', \`服务器错误: \${res.status}\`);
         }
@@ -557,7 +519,6 @@ function notify(title, message) {
         .cat-arrow { width: 14px; height: 14px; color: var(--muted); transition: transform 0.2s; }
         .cat-header.active .cat-arrow { transform: rotate(90deg); color: var(--accent); }
         
-        /* Ensure links are hidden by default */
         .cat-links { display: none; padding-left: 8px; margin-bottom: 8px; }
         .cat-header.active + .cat-links { display: block; }
         
@@ -586,35 +547,29 @@ function notify(title, message) {
 </body>
 </html>`;
 
-  const extSidebarJs = `const CONFIG = {
+const extSidebarJs = `const CONFIG = {
   apiBase: "${domain}",
   password: "${password}"
 };
 const CACHE_KEY = 'cloudnav_data';
 
-// --- 核心改动：连接与自关闭逻辑 (参考 115) ---
 let port = null;
 try {
-    // 1. 建立长连接
     port = chrome.runtime.connect({ name: 'cloudnav_sidebar' });
-    
-    // 2. 获取当前窗口ID并发送给后台，建立绑定关系
     chrome.windows.getCurrent((win) => {
         if (win && port) {
             port.postMessage({ type: 'init', windowId: win.id });
         }
     });
 
-    // 3. 监听关闭指令
     port.onMessage.addListener((msg) => {
         if (msg.action === 'close_panel') {
-            window.close(); // 只有在扩展页面内部调用有效
+            window.close();
         }
     });
 } catch(e) {
     console.error('Connection failed', e);
 }
-// ----------------------------------------
 
 document.addEventListener('DOMContentLoaded', async () => {
     const container = document.getElementById('content');
@@ -628,6 +583,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const getArrowIcon = () => {
         return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cat-arrow"><polyline points="9 18 15 12 9 6"></polyline></svg>';
     };
+
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 
     const getFaviconUrl = (pageUrl) => {
         try {
@@ -694,10 +656,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             catLinks.forEach(link => {
                 const iconSrc = getFaviconUrl(link.url);
                 html += \`
-                    <a href="\${link.url}" target="_blank" class="link-item">
-                        <div class="link-icon"><img src="\${iconSrc}" /></div>
+                    <a href="\${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer" class="link-item">
+                        <div class="link-icon"><img src="\${escapeHtml(iconSrc)}" /></div>
                         <div class="link-info">
-                            <div class="link-title">\${link.title}</div>
+                            <div class="link-title">\${escapeHtml(link.title)}</div>
                         </div>
                     </a>
                 \`;
@@ -722,7 +684,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     allLinks = data.links || [];
                     allCategories = data.categories || [];
                     render(searchInput.value);
-                    // 即使有缓存，也可以在后台悄悄更新一下 Context Menu 的数据源
                     return;
                 }
             }
@@ -740,12 +701,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             allLinks = data.links || [];
             allCategories = data.categories || [];
             
-            // 重要：保存到 storage，供 Background 和 Popup 使用
             await chrome.storage.local.set({ [CACHE_KEY]: data });
             
             render(searchInput.value);
         } catch (e) {
-            container.innerHTML = \`<div class="empty" style="color:#ef4444">加载失败: \${e.message}<br>请点击右上角刷新</div>\`;
+            container.innerHTML = \`<div class="empty" style="color:#ef4444">加载失败: \${escapeHtml(e.message)}<br>请点击右上角刷新</div>\`;
         } finally {
             refreshBtn.classList.remove('rotating');
         }
@@ -756,7 +716,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     searchInput.addEventListener('input', (e) => render(e.target.value));
     refreshBtn.addEventListener('click', () => loadData(true));
 
-    // Listen for refresh messages
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === 'refresh') {
             loadData(true);
@@ -822,7 +781,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                  resolve(blob);
              }, 'image/png');
          });
-
      } catch (e) {
          console.error(e);
          return null;
@@ -850,13 +808,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         const zip = new JSZip();
         
-        // Files
         zip.file("manifest.json", getManifestJson());
         zip.file("background.js", extBackgroundJs);
         zip.file("sidebar.html", extSidebarHtml);
         zip.file("sidebar.js", extSidebarJs);
         
-        // Icon
         const iconBlob = await generateIconBlob();
         if (iconBlob) {
             zip.file("icon.png", iconBlob);
@@ -888,7 +844,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tabs = [
     { id: 'site', label: '网站设置', icon: LayoutTemplate },
     { id: 'ai', label: 'AI 设置', icon: Bot },
-    { id: 'links', label: '链接管理', icon: List },
     { id: 'tools', label: '扩展工具', icon: Wrench },
   ];
 
@@ -896,7 +851,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-slate-200 dark:border-slate-700 flex max-h-[90vh] flex-col md:flex-row">
         
-        {/* Sidebar */}
         <div className="w-full md:w-48 bg-slate-50 dark:bg-slate-800/50 border-r border-slate-200 dark:border-slate-700 flex flex-row md:flex-col p-2 gap-1 overflow-x-auto shrink-0">
             {tabs.map(tab => (
                 <button
@@ -914,7 +868,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             ))}
         </div>
 
-        {/* Content */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-white dark:bg-slate-800">
              <div className="flex justify-between items-center p-4 border-b border-slate-200 dark:border-slate-700 shrink-0">
                 <h3 className="text-lg font-semibold dark:text-white">设置</h3>
@@ -925,7 +878,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             <div className="flex-1 overflow-y-auto p-6 pb-12">
                 
-                {/* 1. Site Settings */}
                 {activeTab === 'site' && (
                     <div className="space-y-6 animate-in fade-in duration-300">
                         <div className="space-y-4">
@@ -1007,11 +959,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/40 px-4 py-3">
                                     <div>
                                         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">访问时先验密</label>
-                                        <p className="text-xs text-slate-500 mt-1">打开后先输密码才能看。关闭后，只有点设置这些操作才验密。</p>
+                                        <p className="text-xs text-slate-500 mt-1">打开后，访问网站就先输密码。关闭后，只有点设置这些操作才验密。</p>
                                     </div>
                                     <button
                                         type="button"
-                                        onClick={() => setLocalSiteSettings(prev => ({ ...prev, requirePasswordOnVisit: !prev.requirePasswordOnVisit }))}
+                                        onClick={() => handleSiteChange('requirePasswordOnVisit', !localSiteSettings.requirePasswordOnVisit)}
                                         className={`relative inline-flex h-8 w-14 items-center rounded-full border transition-all duration-200 ${
                                             localSiteSettings.requirePasswordOnVisit
                                               ? 'border-blue-500 bg-blue-600 shadow-[0_0_0_4px_rgba(59,130,246,0.12)]'
@@ -1029,11 +981,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     </button>
                                 </div>
                             </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">身份验证过期天数</label>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        min="0"
+                                        value={localSiteSettings.passwordExpiryDays}
+                                        onChange={(e) => handleSiteChange('passwordExpiryDays', parseInt(e.target.value) || 0)}
+                                        className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                                <p className="text-xs text-slate-500 mt-1">设置为 0 表示永久不退出，默认 7 天后自动退出</p>
+                            </div>
                         </div>
                     </div>
                 )}
 
-                {/* 2. AI Settings */}
                 {activeTab === 'ai' && (
                     <div className="space-y-6 animate-in fade-in duration-300">
                         <div>
@@ -1113,62 +1077,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     </div>
                 )}
 
-                {/* 3. Link Manager */}
-                {activeTab === 'links' && (
-                    <div className="space-y-4 animate-in fade-in duration-300 flex flex-col h-full">
-                        <div className="flex items-center gap-2 mb-2">
-                            <Filter size={16} className="text-slate-400" />
-                            <select 
-                                value={filterCategory}
-                                onChange={(e) => setFilterCategory(e.target.value)}
-                                className="p-1.5 text-sm rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                            >
-                                <option value="all">全部分类</option>
-                                {categories.map(c => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
-                                ))}
-                            </select>
-                            <span className="text-xs text-slate-400 ml-auto">拖拽调整顺序</span>
-                        </div>
-                        
-                        <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-                             {filteredLinks.length === 0 ? (
-                                 <div className="text-center py-10 text-slate-400 text-sm">暂无链接</div>
-                             ) : (
-                                 filteredLinks.map(link => (
-                                    <div 
-                                        key={link.id}
-                                        draggable
-                                        onDragStart={(e) => handleDragStart(e, link.id)}
-                                        onDragOver={(e) => handleDragOver(e, link.id)}
-                                        onDrop={handleDrop}
-                                        className={`flex items-center gap-3 p-3 bg-white dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 ${draggedId === link.id ? 'opacity-50 border-blue-400 border-dashed' : 'hover:border-blue-300'}`}
-                                    >
-                                        <div className="cursor-move text-slate-400 hover:text-slate-600">
-                                            <GripVertical size={16} />
-                                        </div>
-                                        <div className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-600 flex items-center justify-center text-xs overflow-hidden">
-                                            {link.icon ? <img src={link.icon} className="w-full h-full object-cover"/> : link.title.charAt(0)}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="text-sm font-medium dark:text-slate-200 truncate">{link.title}</div>
-                                            <div className="text-xs text-slate-400 truncate">{link.url}</div>
-                                        </div>
-                                        <div className="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-600 text-slate-500">
-                                            {categories.find(c => c.id === link.categoryId)?.name}
-                                        </div>
-                                    </div>
-                                 ))
-                             )}
-                        </div>
-                    </div>
-                )}
-
-                {/* 4. Tools (Extension) - New 3-Step UI */}
                 {activeTab === 'tools' && (
                     <div className="space-y-8 animate-in fade-in duration-300">
                         
-                        {/* Step 1 */}
                         <div className="space-y-3">
                             <h4 className="font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2">
                                 <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">1</span>
@@ -1184,7 +1095,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                             </div>
                         </div>
 
-                        {/* Step 2 */}
                         <div className="space-y-3">
                             <h4 className="font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2">
                                 <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">2</span>
@@ -1206,7 +1116,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                             </div>
                         </div>
 
-                        {/* Step 3 */}
                         <div className="space-y-4">
                             <h4 className="font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2">
                                 <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">3</span>
@@ -1264,8 +1173,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                             <div className="p-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl flex items-center justify-between">
                                 <div className="flex items-center gap-4">
-                                     <div className="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border border-slate-200 dark:border-slate-600">
-                                        {localSiteSettings.favicon ? <img src={localSiteSettings.favicon} className="w-full h-full object-cover rounded-xl"/> : <Globe size={24} className="text-slate-400"/>}
+                                     <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border border-slate-200 dark:border-slate-600">
+                                        {localSiteSettings.favicon ? <img src={localSiteSettings.favicon} className="w-full h-full object-cover"/> : <Globe size={24} className="text-slate-400"/>}
                                     </div>
                                     <div>
                                         <div className="font-medium text-sm dark:text-white">插件图标 (icon.png)</div>

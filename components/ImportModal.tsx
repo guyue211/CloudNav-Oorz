@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, FileText, ArrowRight, Check, AlertCircle, FolderInput, ListTree } from 'lucide-react';
-import { Category, LinkItem } from '../types';
+import { X, Upload, FileText, ArrowRight, Check, AlertCircle, FolderInput, ListTree, Database } from 'lucide-react';
+import { Category, LinkItem, SearchConfig, AIConfig } from '../types';
 import { parseBookmarks } from '../services/bookmarkParser';
 
 interface ImportModalProps {
@@ -9,6 +9,8 @@ interface ImportModalProps {
   existingLinks: LinkItem[];
   categories: Category[];
   onImport: (newLinks: LinkItem[], newCategories: Category[]) => void;
+  onImportSearchConfig?: (searchConfig: SearchConfig) => void;
+  onImportAIConfig?: (aiConfig: AIConfig) => void;
 }
 
 const ImportModal: React.FC<ImportModalProps> = ({ 
@@ -16,7 +18,9 @@ const ImportModal: React.FC<ImportModalProps> = ({
   onClose, 
   existingLinks, 
   categories, 
-  onImport 
+  onImport,
+  onImportSearchConfig,
+  onImportAIConfig
 }) => {
   const [step, setStep] = useState<'upload' | 'preview'>('upload');
   const [file, setFile] = useState<File | null>(null);
@@ -30,12 +34,34 @@ const ImportModal: React.FC<ImportModalProps> = ({
   // Staging Data
   const [parsedLinks, setParsedLinks] = useState<LinkItem[]>([]);
   const [parsedCategories, setParsedCategories] = useState<Category[]>([]);
+  const [parsedSearchConfig, setParsedSearchConfig] = useState<SearchConfig | null>(null);
+  const [parsedAIConfig, setParsedAIConfig] = useState<AIConfig | null>(null);
   
   // Options
   const [importMode, setImportMode] = useState<'original' | 'merge'>('original');
   const [targetCategoryId, setTargetCategoryId] = useState<string>(categories[0]?.id || 'common');
+  const [importType, setImportType] = useState<'html' | 'json'>('html');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jsonFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Parse JSON backup file
+  const parseJsonBackup = async (file: File): Promise<{ links: LinkItem[], categories: Category[], searchConfig?: SearchConfig, aiConfig?: AIConfig }> => {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    
+    // Validate the structure
+    if (!data.links || !Array.isArray(data.links) || !data.categories || !Array.isArray(data.categories)) {
+      throw new Error('Invalid backup file format');
+    }
+    
+    return {
+      links: data.links,
+      categories: data.categories,
+      searchConfig: data.searchConfig,
+      aiConfig: data.aiConfig
+    };
+  };
 
   if (!isOpen) return null;
 
@@ -44,9 +70,12 @@ const ImportModal: React.FC<ImportModalProps> = ({
     setFile(null);
     setParsedLinks([]);
     setParsedCategories([]);
+    setParsedSearchConfig(null);
+    setParsedAIConfig(null);
     setNewLinksCount(0);
     setDuplicateCount(0);
     setNewCategoriesCount(0);
+    setImportType('html');
   };
 
   const handleClose = () => {
@@ -54,16 +83,22 @@ const ImportModal: React.FC<ImportModalProps> = ({
     onClose();
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'html' | 'json') => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
     
     setFile(selectedFile);
     setAnalyzing(true);
+    setImportType(type);
 
     try {
-        // 1. Parse
-        const result = await parseBookmarks(selectedFile);
+        let result: { links: LinkItem[], categories: Category[], searchConfig?: SearchConfig, aiConfig?: AIConfig };
+        
+        if (type === 'html') {
+            result = await parseBookmarks(selectedFile);
+        } else {
+            result = await parseJsonBackup(selectedFile);
+        }
         
         // 2. Diff Logic
         const existingUrls = new Set(existingLinks.map(l => l.url.trim().replace(/\/$/, ''))); // Normalize URLs slightly
@@ -86,13 +121,18 @@ const ImportModal: React.FC<ImportModalProps> = ({
 
         setParsedLinks(uniqueNewLinks);
         setParsedCategories(uniqueNewCategories);
+        setParsedSearchConfig(result.searchConfig || null);
+        setParsedAIConfig(result.aiConfig || null);
         setNewLinksCount(uniqueNewLinks.length);
         setDuplicateCount(duplicates);
         setNewCategoriesCount(uniqueNewCategories.length);
         
         setStep('preview');
     } catch (error) {
-        alert("解析文件失败，请确保是标准的 Chrome HTML 书签文件。");
+        const errorMessage = type === 'html' 
+            ? "解析文件失败，请确保是标准的 Chrome HTML 书签文件。"
+            : "解析文件失败，请确保是有效的 cloudnav_backup.json 文件。";
+        alert(errorMessage);
         console.error(error);
     } finally {
         setAnalyzing(false);
@@ -150,6 +190,17 @@ const ImportModal: React.FC<ImportModalProps> = ({
       }
 
       onImport(finalLinks, finalCategories);
+      
+      // Import search config if available
+      if (parsedSearchConfig && onImportSearchConfig) {
+          onImportSearchConfig(parsedSearchConfig);
+      }
+      
+      // Import AI config if available
+      if (parsedAIConfig && onImportAIConfig) {
+          onImportAIConfig(parsedAIConfig);
+      }
+      
       handleClose();
   };
 
@@ -171,32 +222,64 @@ const ImportModal: React.FC<ImportModalProps> = ({
         <div className="p-6">
             
             {step === 'upload' && (
-                <div className="flex flex-col items-center justify-center space-y-4 py-8 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                     onClick={() => fileInputRef.current?.click()}>
-                    <input 
-                        type="file" 
-                        ref={fileInputRef} 
-                        className="hidden" 
-                        accept=".html" 
-                        onChange={handleFileChange} 
-                    />
+                <div className="space-y-4">
+                    {/* HTML Import Option */}
+                    <div className="flex flex-col items-center justify-center space-y-4 py-8 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                         onClick={() => fileInputRef.current?.click()}>
+                        <input 
+                            type="file" 
+                            ref={fileInputRef} 
+                            className="hidden" 
+                            accept=".html" 
+                            onChange={(e) => handleFileChange(e, 'html')} 
+                        />
+                        
+                        {analyzing && importType === 'html' ? (
+                            <div className="flex flex-col items-center">
+                                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mb-2"></div>
+                                <span className="text-slate-500">正在分析书签文件...</span>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="p-4 bg-blue-100 dark:bg-blue-900/30 rounded-full text-blue-600 dark:text-blue-400">
+                                    <FileText size={32} />
+                                </div>
+                                <div className="text-center">
+                                    <p className="text-sm font-medium dark:text-white">点击选择 HTML 文件</p>
+                                    <p className="text-xs text-slate-500 mt-1">支持 Chrome, Edge, Firefox 导出的书签</p>
+                                </div>
+                            </>
+                        )}
+                    </div>
                     
-                    {analyzing ? (
-                        <div className="flex flex-col items-center">
-                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mb-2"></div>
-                            <span className="text-slate-500">正在分析书签文件...</span>
-                        </div>
-                    ) : (
-                        <>
-                            <div className="p-4 bg-blue-100 dark:bg-blue-900/30 rounded-full text-blue-600 dark:text-blue-400">
-                                <FileText size={32} />
+                    {/* JSON Import Option */}
+                    <div className="flex flex-col items-center justify-center space-y-4 py-8 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                         onClick={() => jsonFileInputRef.current?.click()}>
+                        <input 
+                            type="file" 
+                            ref={jsonFileInputRef} 
+                            className="hidden" 
+                            accept=".json" 
+                            onChange={(e) => handleFileChange(e, 'json')} 
+                        />
+                        
+                        {analyzing && importType === 'json' ? (
+                            <div className="flex flex-col items-center">
+                                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-green-500 mb-2"></div>
+                                <span className="text-slate-500">正在分析备份文件...</span>
                             </div>
-                            <div className="text-center">
-                                <p className="text-sm font-medium dark:text-white">点击选择 HTML 文件</p>
-                                <p className="text-xs text-slate-500 mt-1">支持 Chrome, Edge, Firefox 导出的书签</p>
-                            </div>
-                        </>
-                    )}
+                        ) : (
+                            <>
+                                <div className="p-4 bg-green-100 dark:bg-green-900/30 rounded-full text-green-600 dark:text-green-400">
+                                    <Database size={32} />
+                                </div>
+                                <div className="text-center">
+                                    <p className="text-sm font-medium dark:text-white">导入 cloudnav_backup.json 文件</p>
+                                    <p className="text-xs text-slate-500 mt-1">与 WebDAV 备份格式一致，便于数据迁移</p>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
             )}
 

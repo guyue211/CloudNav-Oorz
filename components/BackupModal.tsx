@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Cloud, Download, Upload, CheckCircle2, AlertCircle, RefreshCw, Save } from 'lucide-react';
-import { Category, LinkItem, WebDavConfig } from '../types';
-import { checkWebDavConnection, uploadBackup, downloadBackup } from '../services/webDavService';
+import { Category, LinkItem, WebDavConfig, SearchConfig, AIConfig } from '../types';
+import { checkWebDavConnection, uploadBackup, uploadBackupWithTimestamp, downloadBackup } from '../services/webDavService';
 import { generateBookmarkHtml, downloadHtmlFile } from '../services/exportService';
 
 interface BackupModalProps {
@@ -12,10 +12,14 @@ interface BackupModalProps {
   onRestore: (links: LinkItem[], categories: Category[]) => void;
   webDavConfig: WebDavConfig;
   onSaveWebDavConfig: (config: WebDavConfig) => void;
+  searchConfig: SearchConfig;
+  onRestoreSearchConfig: (searchConfig: SearchConfig) => void;
+  aiConfig: AIConfig;
+  onRestoreAIConfig: (aiConfig: AIConfig) => void;
 }
 
 const BackupModal: React.FC<BackupModalProps> = ({ 
-  isOpen, onClose, links, categories, onRestore, webDavConfig, onSaveWebDavConfig 
+  isOpen, onClose, links, categories, onRestore, webDavConfig, onSaveWebDavConfig, searchConfig, onRestoreSearchConfig, aiConfig, onRestoreAIConfig 
 }) => {
   const [config, setConfig] = useState<WebDavConfig>(webDavConfig);
   const [isTesting, setIsTesting] = useState(false);
@@ -50,10 +54,23 @@ const BackupModal: React.FC<BackupModalProps> = ({
   const handleBackupToCloud = async () => {
     setSyncStatus('uploading');
     setStatusMsg('正在上传...');
-    const success = await uploadBackup(config, { links, categories });
+    const success = await uploadBackup(config, { links, categories, searchConfig, aiConfig });
     if (success) {
         setSyncStatus('success');
         setStatusMsg('备份成功！');
+    } else {
+        setSyncStatus('error');
+        setStatusMsg('上传失败，请检查配置或网络。');
+    }
+  };
+
+  const handleBackupToCloudWithTimestamp = async () => {
+    setSyncStatus('uploading');
+    setStatusMsg('正在上传...');
+    const result = await uploadBackupWithTimestamp(config, { links, categories, searchConfig, aiConfig });
+    if (result.success) {
+        setSyncStatus('success');
+        setStatusMsg(`备份成功！文件名: ${result.filename}`);
     } else {
         setSyncStatus('error');
         setStatusMsg('上传失败，请检查配置或网络。');
@@ -69,6 +86,14 @@ const BackupModal: React.FC<BackupModalProps> = ({
     
     if (data) {
         onRestore(data.links, data.categories);
+        // 恢复搜索配置（如果存在）
+        if (data.searchConfig) {
+            onRestoreSearchConfig(data.searchConfig);
+        }
+        // 恢复AI配置（如果存在）
+        if (data.aiConfig) {
+            onRestoreAIConfig(data.aiConfig);
+        }
         setSyncStatus('success');
         setStatusMsg('恢复成功！');
     } else {
@@ -81,6 +106,20 @@ const BackupModal: React.FC<BackupModalProps> = ({
     const html = generateBookmarkHtml(links, categories);
     const dateStr = new Date().toISOString().split('T')[0];
     downloadHtmlFile(html, `bookmarks_${dateStr}.html`);
+  };
+
+  const handleExportJson = () => {
+    const data = { links, categories, searchConfig, aiConfig };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cloudnav_backup.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   if (!isOpen) return null;
@@ -102,7 +141,7 @@ const BackupModal: React.FC<BackupModalProps> = ({
             {/* Section 1: WebDAV Configuration */}
             <section className="space-y-4">
                 <div className="flex items-center justify-between">
-                    <h4 className="font-medium text-slate-800 dark:text-slate-200">WebDAV 设置 (坚果云/Nextcloud等)</h4>
+                    <h4 className="font-medium text-slate-800 dark:text-slate-200">WebDAV 设置 (坚果云/<a href="https://infini-cloud.net/en/modules/mypage/usage/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600 underline">InfiniCloud</a>等)</h4>
                     <label className="flex items-center gap-2 cursor-pointer">
                         <input 
                             type="checkbox" 
@@ -171,14 +210,14 @@ const BackupModal: React.FC<BackupModalProps> = ({
             {/* Section 2: Sync Actions */}
             <section className="space-y-4">
                 <h4 className="font-medium text-slate-800 dark:text-slate-200">云端同步操作</h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-4">
                     <button 
                         onClick={handleBackupToCloud}
                         disabled={!config.enabled}
                         className="flex flex-col items-center justify-center p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed group"
                     >
                         <Upload className="w-8 h-8 text-blue-500 mb-2 group-hover:-translate-y-1 transition-transform" />
-                        <span className="text-sm font-medium dark:text-white">上传备份到 WebDAV</span>
+                        <span className="text-sm font-medium dark:text-white">上传备份</span>
                         <span className="text-xs text-slate-500 mt-1">覆盖云端数据</span>
                     </button>
 
@@ -190,6 +229,16 @@ const BackupModal: React.FC<BackupModalProps> = ({
                         <Download className="w-8 h-8 text-purple-500 mb-2 group-hover:-translate-y-1 transition-transform" />
                         <span className="text-sm font-medium dark:text-white">从 WebDAV 恢复</span>
                         <span className="text-xs text-slate-500 mt-1">覆盖本地数据</span>
+                    </button>
+
+                    <button 
+                        onClick={handleBackupToCloudWithTimestamp}
+                        disabled={!config.enabled}
+                        className="flex flex-col items-center justify-center p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed group"
+                    >
+                        <Upload className="w-8 h-8 text-green-500 mb-2 group-hover:-translate-y-1 transition-transform" />
+                        <span className="text-sm font-medium dark:text-white">双重备份</span>
+                        <span className="text-xs text-slate-500 mt-1">带时间戳</span>
                     </button>
                 </div>
                 
@@ -219,6 +268,19 @@ const BackupModal: React.FC<BackupModalProps> = ({
                         className="px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 hover:border-blue-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
                     >
                         <Download size={16} /> 导出 HTML
+                    </button>
+                </div>
+                
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-700/30 flex items-center justify-between">
+                    <div>
+                        <h5 className="text-sm font-medium dark:text-slate-200">导出 cloudnav_backup.json 文件</h5>
+                        <p className="text-xs text-slate-500 mt-1">与 WebDAV 备份格式一致，便于数据迁移</p>
+                    </div>
+                    <button 
+                        onClick={handleExportJson}
+                        className="px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 hover:border-blue-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                    >
+                        <Download size={16} /> 导出 JSON
                     </button>
                 </div>
              </section>
