@@ -261,6 +261,7 @@ async function getUiMode() {
 async function setUiMode(mode) {
     await chrome.storage.local.set({ [MODE_KEY]: mode });
     await chrome.action.setPopup({ popup: mode === 'popup' ? POPUP_PATH : '' });
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: mode === 'sidepanel' }).catch(() => {});
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -330,29 +331,6 @@ chrome.runtime.onConnect.addListener((port) => {
       });
     }
   });
-});
-
-chrome.action.onClicked.addListener(async (tab) => {
-    const mode = await getUiMode();
-    if (mode !== 'sidepanel') return;
-
-    const windowId = tab.windowId;
-    const existingPort = windowPorts[windowId];
-
-    if (existingPort) {
-        try {
-            existingPort.postMessage({ action: 'close_panel' });
-        } catch (e) {
-            delete windowPorts[windowId];
-            chrome.sidePanel.open({ windowId });
-        }
-    } else {
-        try {
-            await chrome.sidePanel.open({ windowId: windowId });
-        } catch (e) {
-            console.error('Failed to open sidebar', e);
-        }
-    }
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
@@ -905,7 +883,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     const renderChips = () => {
-        const items = [{ id: 'all', name: '全部' }, ...allCategories];
+        const fallbackCategories = allCategories.length > 0
+            ? allCategories
+            : Array.from(new Set(allLinks.map((link) => link.categoryId)))
+                .filter(Boolean)
+                .map((categoryId) => ({ id: categoryId, name: categoryId }));
+        const items = [{ id: 'all', name: '全部' }, ...fallbackCategories];
         chips.innerHTML = items.map((category) => \`
             <button class="chip \${activeCategory === category.id ? 'active' : ''}" data-id="\${category.id}">
                 \${escapeHtml(category.name)}
