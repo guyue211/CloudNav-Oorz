@@ -1567,7 +1567,7 @@ function App() {
   };
 
   // --- Search Config ---
-  const handleSaveSearchConfig = async (sources: ExternalSearchSource[], mode: SearchMode, selectedSource?: ExternalSearchSource | null) => {
+  const handleSaveSearchConfig = async (sources: ExternalSearchSource[], mode: SearchMode, selectedSource?: ExternalSearchSource | null, persistToCloud: boolean = true) => {
       const searchConfig: SearchConfig = {
           mode,
           externalSources: sources,
@@ -1581,15 +1581,15 @@ function App() {
       }
       
       // 只保存到KV空间（搜索配置允许无密码访问）
+      if (!persistToCloud || !authToken) {
+          return;
+      }
+
       try {
           const headers: Record<string, string> = {
               'Content-Type': 'application/json'
           };
-          
-          // 如果有认证令牌，添加认证头
-          if (authToken) {
-              headers['x-auth-password'] = authToken;
-          }
+          headers['x-auth-password'] = authToken;
           
           const response = await fetch('/api/storage', {
               method: 'POST',
@@ -1606,6 +1606,16 @@ function App() {
       } catch (error) {
           console.error('Error saving search config to KV:', error);
       }
+  };
+
+  const openSearchConfigModal = () => {
+      if (!requireAuth()) return;
+      setIsSearchConfigModalOpen(true);
+  };
+
+  const handleSearchConfigModalSave = async (sources: ExternalSearchSource[]) => {
+      if (!requireAuth()) return;
+      await handleSaveSearchConfig(sources, searchMode, undefined, true);
   };
 
   const handleSearchModeChange = (mode: SearchMode) => {
@@ -2215,7 +2225,7 @@ function App() {
         isOpen={isSearchConfigModalOpen}
         onClose={() => setIsSearchConfigModalOpen(false)}
         sources={externalSearchSources}
-        onSave={(sources) => handleSaveSearchConfig(sources, searchMode)}
+        onSave={handleSearchConfigModalSave}
       />
 
       {/* Sidebar Mobile Overlay */}
@@ -2400,7 +2410,7 @@ function App() {
                 </div>
                 {searchMode === 'external' && (
                   <button
-                    onClick={() => setIsSearchConfigModalOpen(true)}
+                    onClick={openSearchConfigModal}
                     className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors"
                     title="管理搜索源"
                   >
